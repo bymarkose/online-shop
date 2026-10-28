@@ -1,0 +1,404 @@
+// Markose OMS Prisma Schema (Section 4 of Design Document)
+// Database: PostgreSQL with Africa/Cairo operational timezone
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
+}
+
+enum OrderStatus {
+  NEW
+  CONTACT_PENDING
+  CONTACT_ATTEMPTED
+  UNREACHABLE
+  CONFIRMED
+  PREPARING
+  SHIPPED
+  DELIVERED
+  RETURNED
+  CANCELLED
+}
+
+enum DuplicateReviewStatus {
+  NONE
+  PENDING_REVIEW
+  KEPT
+  CANCELLED_AS_DUPLICATE
+}
+
+enum FollowUpStatus {
+  OPEN
+  COMPLETED
+  CANCELLED
+}
+
+enum DuplicateFlagStatus {
+  PENDING
+  KEPT
+  CANCELLED_AS_DUPLICATE
+}
+
+model User {
+  id           String    @id @default(uuid()) @db.Uuid
+  email        String    @unique
+  passwordHash String    @map("password_hash")
+  displayName  String    @map("display_name")
+  isActive     Boolean   @default(true) @map("is_active")
+  lastLoginAt  DateTime? @map("last_login_at")
+  createdAt    DateTime  @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.Timestamptz
+
+  sessions  Session[]
+  auditLogs AuditLog[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at") @db.Timestamptz
+  lastSeenAt DateTime @default(now()) @map("last_seen_at") @db.Timestamptz
+  revokedAt DateTime? @map("revoked_at") @db.Timestamptz
+  createdAt DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([tokenHash])
+  @@map("sessions")
+}
+
+model Product {
+  id           String   @id @default(uuid()) @db.Uuid
+  name         String
+  sku          String   @unique
+  description  String?
+  currentPrice Decimal  @map("current_price") @db.Decimal(12, 2)
+  currency     String   @default("EGP") @db.Char(3)
+  imageUrl     String?  @map("image_url")
+  isActive     Boolean  @default(true) @map("is_active")
+  createdAt    DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  landingPageProducts LandingPageProduct[]
+  orderItems          OrderItem[]
+
+  @@map("products")
+}
+
+model LandingPage {
+  id                 String   @id @default(uuid()) @db.Uuid
+  name               String
+  slug               String   @unique
+  publicId           String   @unique @map("public_id")
+  allowedOrigins     String[] @map("allowed_origins")
+  defaultShippingFee Decimal  @default(50.00) @map("default_shipping_fee") @db.Decimal(12, 2)
+  captchaRequired    Boolean  @default(false) @map("captcha_required")
+  isActive           Boolean  @default(true) @map("is_active")
+  createdAt          DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt          DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  products           LandingPageProduct[]
+  campaigns          Campaign[]
+  orders             Order[]
+  idempotencyRecords IdempotencyRecord[]
+  apiCredentials     ApiCredential[]
+
+  @@map("landing_pages")
+}
+
+model LandingPageProduct {
+  landingPageId String   @map("landing_page_id") @db.Uuid
+  productId     String   @map("product_id") @db.Uuid
+  priceOverride Decimal? @map("price_override") @db.Decimal(12, 2)
+  isDefault     Boolean  @default(false) @map("is_default")
+  maxQuantity   Int      @default(10) @map("max_quantity")
+  sortOrder     Int      @default(1) @map("sort_order")
+
+  landingPage LandingPage @relation(fields: [landingPageId], references: [id], onDelete: Cascade)
+  product     Product     @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@id([landingPageId, productId])
+  @@map("landing_page_products")
+}
+
+model Campaign {
+  id            String   @id @default(uuid()) @db.Uuid
+  landingPageId String   @map("landing_page_id") @db.Uuid
+  publicId      String   @unique @map("public_id")
+  name          String
+  utmSource     String?  @map("utm_source")
+  utmMedium     String?  @map("utm_medium")
+  utmCampaign   String?  @map("utm_campaign")
+  utmContent    String?  @map("utm_content")
+  utmTerm       String?  @map("utm_term")
+  isActive      Boolean  @default(true) @map("is_active")
+  createdAt     DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  landingPage LandingPage @relation(fields: [landingPageId], references: [id], onDelete: Cascade)
+  orders      Order[]
+
+  @@map("campaigns")
+}
+
+model ApiCredential {
+  id            String    @id @default(uuid()) @db.Uuid
+  landingPageId String    @map("landing_page_id") @db.Uuid
+  publicKeyId   String    @unique @map("public_key_id")
+  secretHash    String    @map("secret_hash")
+  label         String
+  scopes        String[]
+  isActive      Boolean   @default(true) @map("is_active")
+  lastUsedAt    DateTime? @map("last_used_at") @db.Timestamptz
+  createdAt     DateTime  @default(now()) @map("created_at") @db.Timestamptz
+
+  landingPage LandingPage @relation(fields: [landingPageId], references: [id], onDelete: Cascade)
+
+  @@map("api_credentials")
+}
+
+model Customer {
+  id              String   @id @default(uuid()) @db.Uuid
+  fullName        String   @map("full_name")
+  phone           String
+  normalizedPhone String   @map("normalized_phone")
+  governorate     String
+  city            String?
+  address         String
+  alternatePhone  String?  @map("alternate_phone")
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  orders       Order[]
+  interactions CustomerInteraction[]
+
+  @@index([normalizedPhone])
+  @@map("customers")
+}
+
+model Order {
+  id                    String                @id @default(uuid()) @db.Uuid
+  orderNumber           String                @unique @map("order_number")
+  customerId            String                @map("customer_id") @db.Uuid
+  landingPageId         String                @map("landing_page_id") @db.Uuid
+  campaignId            String?               @map("campaign_id") @db.Uuid
+  status                OrderStatus           @default(NEW)
+  subtotal              Decimal               @db.Decimal(12, 2)
+  discountAmount        Decimal               @default(0.00) @map("discount_amount") @db.Decimal(12, 2)
+  shippingFee           Decimal               @default(0.00) @map("shipping_fee") @db.Decimal(12, 2)
+  totalAmount           Decimal               @map("total_amount") @db.Decimal(12, 2)
+  currency              String                @default("EGP") @db.Char(3)
+
+  // Delivery snapshot
+  shipName              String                @map("ship_name")
+  shipPhone             String                @map("ship_phone")
+  shipAltPhone          String?               @map("ship_alt_phone")
+  shipGovernorate       String                @map("ship_governorate")
+  shipCity              String?               @map("ship_city")
+  shipAddress           String                @map("ship_address")
+  shipAddressDetails    String?               @map("ship_address_details")
+
+  // Marketing attribution
+  utmSource             String?               @map("utm_source")
+  utmMedium             String?               @map("utm_medium")
+  utmCampaign           String?               @map("utm_campaign")
+  utmContent            String?               @map("utm_content")
+  utmTerm               String?               @map("utm_term")
+  adClickId             String?               @map("ad_click_id")
+  customerNotes         String?               @map("customer_notes")
+
+  // Fraud & Duplicate Prevention
+  idempotencyKey        String                @map("idempotency_key")
+  duplicateReviewStatus DuplicateReviewStatus @default(NONE) @map("duplicate_review_status")
+  matchedOrderId        String?               @map("matched_order_id") @db.Uuid
+
+  // Concurrency & Operational flags
+  version               Int                   @default(1)
+  isTest                Boolean               @default(false) @map("is_test")
+
+  // Shipping Tracking
+  carrierName           String?               @map("carrier_name")
+  trackingNumber        String?               @map("tracking_number")
+
+  // Timestamps (Africa/Cairo presented, stored in UTC)
+  createdAt             DateTime              @default(now()) @map("created_at") @db.Timestamptz
+  updatedAt             DateTime              @updatedAt @map("updated_at") @db.Timestamptz
+  confirmedAt           DateTime?             @map("confirmed_at") @db.Timestamptz
+  shippedAt             DateTime?             @map("shipped_at") @db.Timestamptz
+  deliveredAt           DateTime?             @map("delivered_at") @db.Timestamptz
+  cancelledAt           DateTime?             @map("cancelled_at") @db.Timestamptz
+  returnedAt            DateTime?             @map("returned_at") @db.Timestamptz
+
+  customer       Customer              @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  landingPage    LandingPage           @relation(fields: [landingPageId], references: [id], onDelete: Restrict)
+  campaign       Campaign?             @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  items          OrderItem[]
+  statusHistory  OrderStatusHistory[]
+  interactions   CustomerInteraction[]
+  followUpTasks  FollowUpTask[]
+  shippingEvents ShippingEvent[]
+  duplicateFlags DuplicateFlag[]       @relation("FlaggedOrder")
+
+  @@index([status, createdAt(sort: Desc)])
+  @@index([landingPageId, createdAt(sort: Desc)])
+  @@index([customerId])
+  @@index([carrierName])
+  @@map("orders")
+}
+
+model OrderItem {
+  id                  String  @id @default(uuid()) @db.Uuid
+  orderId             String  @map("order_id") @db.Uuid
+  productId           String  @map("product_id") @db.Uuid
+  productNameSnapshot String  @map("product_name_snapshot")
+  skuSnapshot         String  @map("sku_snapshot")
+  unitPriceSnapshot   Decimal @map("unit_price_snapshot") @db.Decimal(12, 2)
+  quantity            Int
+  lineDiscount        Decimal @default(0.00) @map("line_discount") @db.Decimal(12, 2)
+  lineTotal           Decimal @map("line_total") @db.Decimal(12, 2)
+
+  order   Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@index([orderId])
+  @@index([productId])
+  @@map("order_items")
+}
+
+model OrderStatusHistory {
+  id         String       @id @default(uuid()) @db.Uuid
+  orderId    String       @map("order_id") @db.Uuid
+  fromStatus OrderStatus? @map("from_status")
+  toStatus   OrderStatus  @map("to_status")
+  reason     String?
+  changedBy  String       @map("changed_by")
+  createdAt  DateTime     @default(now()) @map("created_at") @db.Timestamptz
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId, createdAt])
+  @@map("order_status_history")
+}
+
+model CustomerInteraction {
+  id              String   @id @default(uuid()) @db.Uuid
+  customerId      String   @map("customer_id") @db.Uuid
+  orderId         String?  @map("order_id") @db.Uuid
+  userId          String   @map("user_id")
+  interactionType String   @map("interaction_type")
+  outcome         String?
+  note            String?
+  createdAt       DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  customer Customer @relation(fields: [customerId], references: [id], onDelete: Cascade)
+  order    Order?   @relation(fields: [orderId], references: [id], onDelete: SetNull)
+
+  @@index([customerId])
+  @@index([orderId])
+  @@map("customer_interactions")
+}
+
+model FollowUpTask {
+  id          String         @id @default(uuid()) @db.Uuid
+  orderId     String         @map("order_id") @db.Uuid
+  assignedTo  String?        @map("assigned_to")
+  taskType    String         @map("task_type")
+  dueAt       DateTime       @map("due_at") @db.Timestamptz
+  status      FollowUpStatus @default(OPEN)
+  note        String?
+  completedAt DateTime?      @map("completed_at") @db.Timestamptz
+  createdAt   DateTime       @default(now()) @map("created_at") @db.Timestamptz
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([status, dueAt])
+  @@map("follow_up_tasks")
+}
+
+model ShippingEvent {
+  id             String   @id @default(uuid()) @db.Uuid
+  orderId        String   @map("order_id") @db.Uuid
+  carrierName    String   @map("carrier_name")
+  trackingNumber String?  @map("tracking_number")
+  eventType      String   @map("event_type")
+  note           String?
+  eventAt        DateTime @map("event_at") @db.Timestamptz
+  createdBy      String   @map("created_by")
+
+  order Order @relation(fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@map("shipping_events")
+}
+
+model DuplicateFlag {
+  id             String              @id @default(uuid()) @db.Uuid
+  orderId        String              @map("order_id") @db.Uuid
+  matchedOrderId String              @map("matched_order_id") @db.Uuid
+  status         DuplicateFlagStatus @default(PENDING)
+  resolvedBy     String?             @map("resolved_by")
+  resolvedAt     DateTime?           @map("resolved_at") @db.Timestamptz
+  note           String?
+  createdAt      DateTime            @default(now()) @map("created_at") @db.Timestamptz
+
+  order Order @relation("FlaggedOrder", fields: [orderId], references: [id], onDelete: Cascade)
+
+  @@index([orderId])
+  @@index([matchedOrderId])
+  @@map("duplicate_flags")
+}
+
+model IdempotencyRecord {
+  id             String   @id @default(uuid()) @db.Uuid
+  sourceId       String   @map("source_id") @db.Uuid
+  idempotencyKey String   @map("idempotency_key")
+  requestHash    String   @map("request_hash")
+  responseStatus Int      @map("response_status")
+  responseBody   Json     @map("response_body")
+  expiresAt      DateTime @map("expires_at") @db.Timestamptz
+  createdAt      DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  landingPage LandingPage @relation(fields: [sourceId], references: [id], onDelete: Cascade)
+
+  @@unique([sourceId, idempotencyKey])
+  @@map("idempotency_records")
+}
+
+model OrderCounter {
+  year      Int @id
+  lastValue Int @default(0) @map("last_value")
+
+  @@map("order_counters")
+}
+
+model AuditLog {
+  id         String   @id @default(uuid()) @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  action     String
+  entityType String   @map("entity_type")
+  entityId   String   @map("entity_id")
+  oldValues  Json?    @map("old_values")
+  newValues  Json?    @map("new_values")
+  requestId  String   @map("request_id")
+  createdAt  DateTime @default(now()) @map("created_at") @db.Timestamptz
+
+  user User? @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([entityType, entityId, createdAt])
+  @@map("audit_logs")
+}
+
+model Setting {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt @map("updated_at") @db.Timestamptz
+
+  @@map("settings")
+}

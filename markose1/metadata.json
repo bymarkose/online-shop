@@ -1,0 +1,8 @@
+{
+  "name": "Remix Remix ماركوس - نظام إدارة الطلبات Markose OMS",
+  "description": "نظام تشغيلي متكامل لإدارة طلبات التجارة الإلكترونية والدفع عند الاستلام (COD) مع محرك كشف التكرار وآلة حالات الطلبات وتتبع الشحن والعملاء وصفحات الهبوط",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

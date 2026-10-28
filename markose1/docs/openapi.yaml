@@ -1,0 +1,370 @@
+openapi: 3.1.0
+info:
+  title: Markose Order Management System API
+  version: 1.0.0
+  description: نظام ماركوس المتكامل لإدارة طلبات التجارة الإلكترونية والدفع عند الاستلام (COD) في مصر والشرق الأوسط مع معالجة التكرار وآلة الحالات الصارمة
+servers:
+  - url: /api/v1
+    description: Current Server API Endpoint
+
+paths:
+  /public/orders:
+    post:
+      summary: إنشاء طلب جديد من صفحة الهبوط العامة
+      description: استقبال طلب عميل من صفحة هبوط خارجية مع فحص التكرار، توحيد رقم الموبايل المصري، والحساب الخادمي للأسعار.
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          description: مفتاح UUID فريد من صفحة الهبوط لمنع تكرار الحفظ
+          schema:
+            type: string
+            pattern: '^[A-Za-z0-9_-]{16,128}$'
+            example: 'idem-20261027-uuid-example-12345'
+        - name: X-Captcha-Token
+          in: header
+          required: false
+          description: رمز الكابتشا للصفحات التي تفرضه
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PublicOrderRequest'
+      responses:
+        '201':
+          description: تم إنشاء الطلب بنجاح أو إعادة الاستجابة الأصلية لمفتاح مكرر
+          headers:
+            Idempotent-Replay:
+              schema:
+                type: boolean
+              description: true إذا كانت الاستجابة مسترجعة من الذاكرة دون إنشاء طلب جديد
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PublicOrderResponse'
+        '400':
+          $ref: '#/components/responses/Error'
+        '403':
+          $ref: '#/components/responses/Error'
+        '404':
+          $ref: '#/components/responses/Error'
+        '409':
+          description: تعارض مفتاح Idempotency-Key مستخدم سابقًا مع بيانات مختلفة
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+        '422':
+          description: خطأ في التحقق من صحة البيانات أو رقم الهاتف أو توفر المنتج
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorEnvelope'
+
+  /orders:
+    get:
+      summary: استعراض قائمة الطلبات مع الفلاتر والبحث والترقيم
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: pageSize
+          in: query
+          schema:
+            type: integer
+            default: 25
+        - name: status
+          in: query
+          schema:
+            type: string
+        - name: governorate
+          in: query
+          schema:
+            type: string
+        - name: search
+          in: query
+          schema:
+            type: string
+        - name: duplicatesOnly
+          in: query
+          schema:
+            type: boolean
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Order'
+                  meta:
+                    type: object
+                    properties:
+                      page: { type: integer }
+                      page_size: { type: integer }
+                      total: { type: integer }
+                      total_pages: { type: integer }
+
+  /orders/{id}:
+    get:
+      summary: تفاصيل الطلب بالكامل وبنود المنتجات وسجل الحالات
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/Order' }
+
+  /orders/{id}/status:
+    patch:
+      summary: انتقال حالة الطلب وفق آلة الحالات الصارمة
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [NEW, CONTACT_PENDING, CONTACT_ATTEMPTED, UNREACHABLE, CONFIRMED, PREPARING, SHIPPED, DELIVERED, RETURNED, CANCELLED]
+                reason:
+                  type: string
+                  description: إلزامي عند CANCELLED أو UNREACHABLE أو RETURNED أو إعادة فتح طلب ملغي
+                expectedVersion:
+                  type: integer
+                  description: للتحقق من عدم حدوث تعارض تزامني (Optimistic Locking)
+                carrier_name:
+                  type: string
+                  description: إلزامي عند الانتقال إلى SHIPPED
+                tracking_number:
+                  type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  data: { $ref: '#/components/schemas/Order' }
+        '409':
+          description: تعارض تزامني في الإصدار أو الحالة (STATE_CONFLICT)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+        '422':
+          description: انتقال غير مسموح (INVALID_TRANSITION) أو نقص السبب الإلزامي
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ErrorEnvelope' }
+
+  /duplicate-flags/{id}:
+    patch:
+      summary: حسم قرار المراجعة البشرية لطلب مشتبه بتكراره
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [resolution]
+              properties:
+                resolution:
+                  type: string
+                  enum: [KEPT, CANCELLED_AS_DUPLICATE]
+                note:
+                  type: string
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success: { type: boolean }
+                  message: { type: string }
+
+  /health:
+    get:
+      summary: فحص صحة وجاهزية الخادم
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: 'ok' }
+                  timestamp: { type: string }
+                  version: { type: string, example: '1.0.0' }
+
+components:
+  schemas:
+    PublicOrderRequest:
+      type: object
+      required: [source, customer, items]
+      properties:
+        source:
+          type: object
+          required: [landing_page_id]
+          properties:
+            landing_page_id:
+              type: string
+              example: 'lp_sho_7Hk2mQ'
+            campaign_id:
+              type: string
+              example: 'cmp_fb_wtr_01'
+        customer:
+          type: object
+          required: [full_name, phone, governorate, address]
+          properties:
+            full_name:
+              type: string
+              minLength: 2
+              maxLength: 100
+              example: 'طارق عبد المنعم'
+            phone:
+              type: string
+              example: '01012345678'
+            alternate_phone:
+              type: string
+              example: '01155443322'
+            governorate:
+              type: string
+              example: 'الدقهلية'
+            city:
+              type: string
+              example: 'المنصورة'
+            address:
+              type: string
+              minLength: 5
+              maxLength: 300
+              example: 'شارع المشاية السفلية، برج الأندلس'
+            address_details:
+              type: string
+              maxLength: 300
+        items:
+          type: array
+          minItems: 1
+          maxItems: 10
+          items:
+            type: object
+            required: [product_id, quantity]
+            properties:
+              product_id:
+                type: string
+                example: 'prod-001'
+              quantity:
+                type: integer
+                minimum: 1
+                maximum: 10
+                example: 1
+        attribution:
+          type: object
+          properties:
+            utm_source: { type: string }
+            utm_medium: { type: string }
+            utm_campaign: { type: string }
+            utm_content: { type: string }
+            utm_term: { type: string }
+            ad_click_id: { type: string }
+        customer_notes:
+          type: string
+          maxLength: 500
+        website:
+          type: string
+          description: حقل فخ (Honeypot) يجب أن يترك فارغًا لمنع الروبوتات
+    PublicOrderResponse:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: true
+        data:
+          type: object
+          properties:
+            order_number:
+              type: string
+              example: 'ORD-2026-000042'
+            status:
+              type: string
+              example: 'NEW'
+            total_amount:
+              type: string
+              example: '1505.00'
+            currency:
+              type: string
+              example: 'EGP'
+            message:
+              type: string
+              example: 'تم استلام طلبك بنجاح'
+    Order:
+      type: object
+      properties:
+        id: { type: string }
+        order_number: { type: string }
+        status: { type: string }
+        subtotal: { type: string }
+        discount_amount: { type: string }
+        shipping_fee: { type: string }
+        total_amount: { type: string }
+        currency: { type: string }
+        ship_name: { type: string }
+        ship_phone: { type: string }
+        ship_governorate: { type: string }
+        ship_city: { type: string }
+        ship_address: { type: string }
+        duplicate_review_status: { type: string }
+        version: { type: integer }
+        created_at: { type: string }
+    ErrorEnvelope:
+      type: object
+      properties:
+        success:
+          type: boolean
+          example: false
+        error:
+          type: object
+          properties:
+            code: { type: string, example: 'VALIDATION_ERROR' }
+            message: { type: string, example: 'بيانات الطلب غير صالحة' }
+            details: { type: array, items: { type: object } }
+            request_id: { type: string, example: 'req_8f3a91c' }
+  responses:
+    Error:
+      description: استجابة خطأ قياسية موحدة
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorEnvelope'
